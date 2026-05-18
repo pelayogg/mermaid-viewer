@@ -838,8 +838,9 @@ function share() {
 }
 
 function downloadSvg() {
-  if (!lastSvg) return toast("Nada que exportar");
-  const blob = new Blob([lastSvg], { type: "image/svg+xml" });
+  const built = buildStandaloneSvg();
+  if (!built) return toast("Nada que exportar");
+  const blob = new Blob([built.xml], { type: "image/svg+xml" });
   triggerDownload(blob, "diagram.svg");
 }
 
@@ -849,21 +850,19 @@ function downloadMmd() {
 }
 
 function copySvg() {
-  if (!lastSvg) return toast("Nada que copiar");
-  navigator.clipboard.writeText(lastSvg).then(
+  const built = buildStandaloneSvg();
+  if (!built) return toast("Nada que copiar");
+  navigator.clipboard.writeText(built.xml).then(
     () => toast("SVG copiado"),
     () => toast("No se pudo copiar")
   );
 }
 
-async function downloadPng(transparent = false) {
-  if (!lastSvg) return toast("Nada que exportar");
+/* Build a standalone SVG with all computed styles inlined so it renders
+   correctly outside this document (raster export, other viewers, Figma…). */
+function buildStandaloneSvg() {
   const svgEl = $("preview").querySelector("svg");
-  if (!svgEl) return;
-
-  const scale = Math.max(1, parseInt($("pngScale").value, 10) || 3);
-
-  // 1) Clone and normalize the SVG so it rasterizes at a known crisp size
+  if (!svgEl) return null;
   const clone = svgEl.cloneNode(true);
   const bbox = svgEl.getBBox();
   const pad = 24;
@@ -874,15 +873,47 @@ async function downloadPng(transparent = false) {
   clone.setAttribute("viewBox", `${bbox.x - pad} ${bbox.y - pad} ${w} ${h}`);
   clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
   clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
-  clone.style.background = "transparent";
 
-  // 2) Inline a small font-family hint so text rasterizes consistently
+  const STYLE_PROPS = [
+    "fill", "fill-opacity", "fill-rule",
+    "stroke", "stroke-width", "stroke-opacity",
+    "stroke-dasharray", "stroke-dashoffset",
+    "stroke-linecap", "stroke-linejoin", "stroke-miterlimit",
+    "marker-start", "marker-mid", "marker-end",
+    "opacity", "visibility",
+    "font-family", "font-size", "font-weight", "font-style",
+    "text-anchor", "dominant-baseline", "letter-spacing", "color"
+  ];
+  const srcNodes = svgEl.querySelectorAll("*");
+  const dstNodes = clone.querySelectorAll("*");
+  for (let i = 0; i < srcNodes.length; i++) {
+    const src = srcNodes[i], dst = dstNodes[i];
+    if (!dst) continue;
+    const cs = window.getComputedStyle(src);
+    let inline = "";
+    for (const p of STYLE_PROPS) {
+      const v = cs.getPropertyValue(p);
+      if (v && v !== "" && v !== "normal" && v !== "auto") inline += `${p}:${v};`;
+    }
+    if (inline) dst.setAttribute("style", inline);
+  }
+
   const styleEl = document.createElementNS("http://www.w3.org/2000/svg", "style");
-  styleEl.textContent = "text,.nodeLabel,.edgeLabel,.label,.actor,.messageText,.loopText,.noteText,.titleText,tspan{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif!important}";
+  styleEl.textContent = "text,tspan{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}";
   clone.insertBefore(styleEl, clone.firstChild);
 
-  // 3) Serialize via Blob URL (more reliable than data: for big SVGs)
-  const xml = new XMLSerializer().serializeToString(clone);
+  return {
+    width: w, height: h,
+    xml: '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone)
+  };
+}
+
+async function downloadPng(transparent = false) {
+  const built = buildStandaloneSvg();
+  if (!built) return toast("Nada que exportar");
+  const { width: w, height: h, xml } = built;
+  const scale = Math.max(1, parseInt($("pngScale").value, 10) || 3);
+
   const blob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(blob);
 

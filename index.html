@@ -475,10 +475,19 @@
         <button class="btn" id="btnClear">Limpiar</button>
       </div>
 
+      <select class="field" id="pngScale" title="Escala PNG (mayor = más nítido)">
+        <option value="1">PNG 1x</option>
+        <option value="2">PNG 2x</option>
+        <option value="3" selected>PNG 3x</option>
+        <option value="4">PNG 4x</option>
+        <option value="6">PNG 6x</option>
+      </select>
+
       <div class="group">
         <button class="btn" id="btnCopySvg">Copiar SVG</button>
         <button class="btn" id="btnDlSvg">SVG</button>
         <button class="btn" id="btnDlPng">PNG</button>
+        <button class="btn" id="btnDlPngT" title="PNG con fondo transparente">PNG ⌀</button>
         <button class="btn" id="btnDlMmd">.mmd</button>
       </div>
 
@@ -847,34 +856,59 @@ function copySvg() {
   );
 }
 
-function downloadPng() {
+async function downloadPng(transparent = false) {
   if (!lastSvg) return toast("Nada que exportar");
   const svgEl = $("preview").querySelector("svg");
   if (!svgEl) return;
-  // serialize at intrinsic size
+
+  const scale = Math.max(1, parseInt($("pngScale").value, 10) || 3);
+
+  // 1) Clone and normalize the SVG so it rasterizes at a known crisp size
   const clone = svgEl.cloneNode(true);
   const bbox = svgEl.getBBox();
-  const w = Math.ceil(bbox.width + 40);
-  const h = Math.ceil(bbox.height + 40);
+  const pad = 24;
+  const w = Math.ceil(bbox.width + pad * 2);
+  const h = Math.ceil(bbox.height + pad * 2);
   clone.setAttribute("width", w);
   clone.setAttribute("height", h);
-  clone.setAttribute("viewBox", `${bbox.x - 20} ${bbox.y - 20} ${w} ${h}`);
+  clone.setAttribute("viewBox", `${bbox.x - pad} ${bbox.y - pad} ${w} ${h}`);
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+  clone.style.background = "transparent";
+
+  // 2) Inline a small font-family hint so text rasterizes consistently
+  const styleEl = document.createElementNS("http://www.w3.org/2000/svg", "style");
+  styleEl.textContent = "text,.nodeLabel,.edgeLabel,.label,.actor,.messageText,.loopText,.noteText,.titleText,tspan{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif!important}";
+  clone.insertBefore(styleEl, clone.firstChild);
+
+  // 3) Serialize via Blob URL (more reliable than data: for big SVGs)
   const xml = new XMLSerializer().serializeToString(clone);
-  const svg64 = btoa(unescape(encodeURIComponent(xml)));
+  const blob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+
   const img = new Image();
+  img.width = w; img.height = h;
+  img.decoding = "sync";
   img.onload = () => {
-    const scale = 2;
     const c = document.createElement("canvas");
-    c.width = w * scale; c.height = h * scale;
+    c.width = Math.round(w * scale);
+    c.height = Math.round(h * scale);
     const ctx = c.getContext("2d");
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, c.width, c.height);
-    ctx.scale(scale, scale);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    if (!transparent) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, c.width, c.height);
+    }
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.drawImage(img, 0, 0, w, h);
-    c.toBlob((blob) => triggerDownload(blob, "diagram.png"), "image/png");
+    c.toBlob((png) => {
+      triggerDownload(png, `diagram@${scale}x${transparent ? "-transparent" : ""}.png`);
+      URL.revokeObjectURL(url);
+    }, "image/png");
   };
-  img.onerror = () => toast("Error al exportar PNG");
-  img.src = "data:image/svg+xml;base64," + svg64;
+  img.onerror = () => { URL.revokeObjectURL(url); toast("Error al exportar PNG"); };
+  img.src = url;
 }
 
 function triggerDownload(blob, filename) {
@@ -968,7 +1002,8 @@ $("tplModal").addEventListener("click", (e) => { if (e.target.id === "tplModal")
 
 $("btnShare").addEventListener("click", share);
 $("btnDlSvg").addEventListener("click", downloadSvg);
-$("btnDlPng").addEventListener("click", downloadPng);
+$("btnDlPng").addEventListener("click", () => downloadPng(false));
+$("btnDlPngT").addEventListener("click", () => downloadPng(true));
 $("btnDlMmd").addEventListener("click", downloadMmd);
 $("btnCopySvg").addEventListener("click", copySvg);
 $("btnFormat").addEventListener("click", format);

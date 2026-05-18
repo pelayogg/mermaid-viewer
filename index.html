@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mermaid Viewer · Editor & Preview</title>
+<meta name="description" content="Visor y editor de diagramas Mermaid. Alternativa minimalista a mermaid.live con plantillas, exportación, share por URL y autosave.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100;200;300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!-- CodeMirror 5 (editor with line numbers) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/selection/active-line.min.js"></script>
+
+<!-- pako (deflate, compatible with mermaid.live share format) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+
+<!-- svg-pan-zoom for preview -->
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+
+<style>
+  :root {
+    --bg-outer: #f0f0f0;
+    --bg-canvas: #ffffff;
+    --ink: #1a1a1a;
+    --ink-soft: #444;
+    --ink-mute: #888;
+    --line: #e8e8e8;
+    --line-strong: #1a1a1a;
+    --blue: #3a6bea;
+    --blue-soft: #f4f8ff;
+    --orange: #e8720c;
+    --orange-soft: #fff8f4;
+    --green: #2f9e44;
+    --red: #d63939;
+    --neutral-soft: #f8f8f8;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-outer);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  .app {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    gap: 12px;
+  }
+
+  /* ── Header ── */
+  .topbar {
+    background: var(--bg-canvas);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .brand {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .brand .label {
+    font-size: 10px;
+    font-weight: 300;
+    letter-spacing: 0.22em;
+    color: var(--ink-mute);
+    text-transform: uppercase;
+  }
+  .brand .title {
+    font-size: 18px;
+    font-weight: 200;
+    letter-spacing: -0.01em;
+    line-height: 1;
+    color: var(--ink);
+  }
+  .brand .title .accent { color: var(--blue); font-weight: 300; }
+
+  .toolbar { display: flex; gap: 0; flex-wrap: wrap; align-items: center; }
+
+  .group {
+    display: flex;
+    border: 1px solid var(--line-strong);
+    margin-right: 10px;
+  }
+  .group:last-child { margin-right: 0; }
+
+  .btn {
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--line-strong);
+    color: var(--ink);
+    padding: 9px 16px;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
+  .btn:last-child { border-right: none; }
+  .btn:hover { background: var(--ink); color: #fff; }
+  .btn.primary:hover { background: var(--blue); }
+  .btn.warn:hover { background: var(--orange); }
+  .btn .kbd {
+    font-size: 9px;
+    font-weight: 400;
+    letter-spacing: 0.04em;
+    color: var(--ink-mute);
+    margin-left: 8px;
+    text-transform: none;
+  }
+  .btn:hover .kbd { color: rgba(255,255,255,0.55); }
+
+  select.field {
+    background: var(--bg-canvas);
+    border: 1px solid var(--line-strong);
+    padding: 9px 28px 9px 12px;
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink);
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='none' stroke='%231a1a1a' stroke-width='1.4' d='M1 1l4 4 4-4'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    margin-right: 10px;
+  }
+
+  /* ── Main split ── */
+  .split {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 6px 1.2fr;
+    min-height: 0;
+  }
+
+  .pane {
+    background: var(--bg-canvas);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .pane-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .pane-head .label {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    color: var(--ink-mute);
+    text-transform: uppercase;
+  }
+  .pane-head .meta {
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    color: var(--ink-mute);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .status-dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  .status-dot.err { background: var(--red); }
+  .status-dot.busy { background: var(--orange); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+
+  /* ── Editor pane ── */
+  .editor-wrap {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .CodeMirror {
+    height: 100% !important;
+    flex: 1;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    background: var(--bg-canvas);
+    color: var(--ink);
+  }
+  .CodeMirror-gutters {
+    background: var(--neutral-soft);
+    border-right: 1px solid var(--line);
+  }
+  .CodeMirror-linenumber {
+    color: var(--ink-mute);
+    font-weight: 300;
+    font-size: 11px;
+  }
+  .CodeMirror-cursor { border-left: 1.5px solid var(--blue); }
+  .CodeMirror-activeline-background { background: var(--blue-soft); }
+  .CodeMirror-error-line { background: rgba(214, 57, 57, 0.08); }
+
+  .error-bar {
+    border-top: 1px solid var(--line);
+    padding: 10px 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--red);
+    background: rgba(214, 57, 57, 0.04);
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow: auto;
+  }
+  .error-bar:empty { display: none; }
+
+  /* ── Splitter ── */
+  .splitter {
+    background: transparent;
+    cursor: col-resize;
+    position: relative;
+  }
+  .splitter::after {
+    content: "";
+    position: absolute;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px; height: 36px;
+    background: var(--line-strong);
+    opacity: 0.4;
+  }
+  .splitter:hover::after { opacity: 1; }
+
+  /* ── Preview pane ── */
+  .preview-wrap {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    background:
+      linear-gradient(var(--neutral-soft) 1px, transparent 1px) 0 0 / 24px 24px,
+      linear-gradient(90deg, var(--neutral-soft) 1px, transparent 1px) 0 0 / 24px 24px,
+      var(--bg-canvas);
+  }
+  .preview-wrap svg { display: block; max-width: 100%; height: 100%; }
+
+  .preview-controls {
+    position: absolute;
+    bottom: 14px; right: 14px;
+    display: flex;
+    border: 1px solid var(--line-strong);
+    background: var(--bg-canvas);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    z-index: 10;
+  }
+  .preview-controls button {
+    background: transparent;
+    border: none;
+    border-right: 1px solid var(--line-strong);
+    padding: 8px 12px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--ink);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    min-width: 36px;
+  }
+  .preview-controls button:last-child { border-right: none; }
+  .preview-controls button:hover { background: var(--ink); color: #fff; }
+
+  .preview-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+    color: var(--ink-mute);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 400;
+  }
+  .preview-empty .icon { font-size: 36px; font-weight: 100; color: var(--ink-mute); }
+
+  /* ── Footer ── */
+  .footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 4px 0;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+  }
+  .footer .logo { font-weight: 700; color: var(--ink); letter-spacing: 0.04em; }
+  .footer .logo span { font-weight: 200; }
+  .footer-right { display: flex; gap: 14px; align-items: center; }
+  .footer a { color: var(--ink-mute); text-decoration: none; }
+  .footer a:hover { color: var(--blue); }
+
+  /* ── Modal (templates) ── */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--bg-canvas);
+    width: min(880px, 92vw);
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 80px rgba(0,0,0,0.25);
+  }
+  .modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--line-strong);
+  }
+  .modal-title {
+    font-size: 18px;
+    font-weight: 200;
+    letter-spacing: -0.01em;
+  }
+  .modal-title .accent { color: var(--blue); }
+  .modal-close {
+    background: transparent;
+    border: 1px solid var(--line);
+    padding: 6px 12px;
+    font-family: inherit;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    cursor: pointer;
+  }
+  .modal-close:hover { color: var(--ink); border-color: var(--ink); }
+  .modal-body {
+    padding: 24px;
+    overflow: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+  }
+  .tpl {
+    border: 1px solid var(--line);
+    padding: 16px;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    background: var(--bg-canvas);
+    text-align: left;
+    font-family: inherit;
+  }
+  .tpl:hover { border-color: var(--blue); background: var(--blue-soft); }
+  .tpl .tpl-tag {
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--blue);
+    margin-bottom: 8px;
+  }
+  .tpl .tpl-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink);
+    margin-bottom: 4px;
+  }
+  .tpl .tpl-desc {
+    font-size: 11px;
+    color: var(--ink-mute);
+    font-weight: 300;
+    line-height: 1.5;
+  }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: var(--ink);
+    color: #fff;
+    padding: 10px 18px;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    opacity: 0;
+    transition: all 0.25s;
+    z-index: 2000;
+    pointer-events: none;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* ── Fullscreen ── */
+  .preview-wrap.fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    .split { grid-template-columns: 1fr; grid-template-rows: 1fr 6px 1fr; }
+    .splitter { cursor: row-resize; }
+    .splitter::after { width: 36px; height: 2px; }
+    .toolbar .btn .kbd { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="label">Diagram · Editor</div>
+      <div class="title">Mermaid <span class="accent">Viewer</span></div>
+    </div>
+
+    <div class="toolbar">
+      <select class="field" id="themeSel" title="Tema Mermaid">
+        <option value="default">Default</option>
+        <option value="neutral">Neutral</option>
+        <option value="dark">Dark</option>
+        <option value="forest">Forest</option>
+        <option value="base">Base</option>
+      </select>
+
+      <div class="group">
+        <button class="btn primary" id="btnTpl">Plantillas</button>
+        <button class="btn" id="btnFormat" title="Reindentar">Format <span class="kbd">⇧⌥F</span></button>
+        <button class="btn" id="btnClear">Limpiar</button>
+      </div>
+
+      <div class="group">
+        <button class="btn" id="btnCopySvg">Copiar SVG</button>
+        <button class="btn" id="btnDlSvg">SVG</button>
+        <button class="btn" id="btnDlPng">PNG</button>
+        <button class="btn" id="btnDlMmd">.mmd</button>
+      </div>
+
+      <div class="group">
+        <button class="btn primary" id="btnShare">Share <span class="kbd">⌘S</span></button>
+        <button class="btn" id="btnOpen">Abrir <span class="kbd">⌘O</span></button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Editor / Preview split -->
+  <main class="split" id="split">
+    <section class="pane">
+      <div class="pane-head">
+        <div class="label"><span class="status-dot" id="statusDot"></span>Editor</div>
+        <div class="meta" id="editorMeta">— líneas</div>
+      </div>
+      <div class="editor-wrap">
+        <textarea id="editor"></textarea>
+      </div>
+      <div class="error-bar" id="errorBar"></div>
+    </section>
+
+    <div class="splitter" id="splitter"></div>
+
+    <section class="pane">
+      <div class="pane-head">
+        <div class="label">Preview</div>
+        <div class="meta" id="previewMeta">—</div>
+      </div>
+      <div class="preview-wrap" id="previewWrap">
+        <div class="preview-empty" id="previewEmpty"><div class="icon">◇</div><div>Sin diagrama</div></div>
+        <div id="preview" style="width:100%;height:100%;"></div>
+        <div class="preview-controls">
+          <button id="zoomIn" title="Zoom in">+</button>
+          <button id="zoomOut" title="Zoom out">−</button>
+          <button id="zoomFit" title="Ajustar">⤢</button>
+          <button id="zoomReset" title="100%">1:1</button>
+          <button id="btnFull" title="Pantalla completa">⛶</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="logo">MERMAID<span> · VIEWER</span></div>
+    <div class="footer-right">
+      <span id="saveStatus">Guardado local</span>
+      <a href="https://mermaid.js.org/intro/" target="_blank" rel="noopener">Docs Mermaid ↗</a>
+      <a href="https://github.com/pelayogg/mermaid-viewer" target="_blank" rel="noopener">GitHub ↗</a>
+    </div>
+  </footer>
+</div>
+
+<!-- Hidden file input for Open -->
+<input type="file" id="fileInput" accept=".mmd,.mermaid,.md,.txt" style="display:none">
+
+<!-- Templates modal -->
+<div class="modal-backdrop" id="tplModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Galería de <span class="accent">plantillas</span></div>
+      <button class="modal-close" id="tplClose">Cerrar</button>
+    </div>
+    <div class="modal-body" id="tplGrid"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast">OK</div>
+
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+
+/* ─────────── Templates ─────────── */
+const TEMPLATES = [
+  { tag: "flow", title: "Flowchart", desc: "Diagrama de flujo top-down con decisiones.", code:
+`flowchart TD
+    A[Inicio] --> B{¿Login válido?}
+    B -- Sí --> C[Mostrar dashboard]
+    B -- No --> D[Mostrar error]
+    C --> E([Fin])
+    D --> E` },
+  { tag: "sequence", title: "Sequence", desc: "Interacción entre actores y sistemas.", code:
+`sequenceDiagram
+    autonumber
+    actor U as Usuario
+    participant FE as Frontend
+    participant BE as Backend
+    participant DB as DB
+    U->>FE: Login
+    FE->>BE: POST /auth
+    BE->>DB: SELECT user
+    DB-->>BE: row
+    BE-->>FE: 200 OK + token
+    FE-->>U: Bienvenido` },
+  { tag: "class", title: "Class diagram", desc: "Modelo de clases UML.", code:
+`classDiagram
+    class Order {
+      +String id
+      +Date createdAt
+      +confirm()
+      +cancel()
+    }
+    class Customer {
+      +String id
+      +String email
+    }
+    Customer "1" --> "*" Order : places` },
+  { tag: "state", title: "State diagram", desc: "Máquina de estados.", code:
+`stateDiagram-v2
+    [*] --> Draft
+    Draft --> Submitted: submit
+    Submitted --> Approved: approve
+    Submitted --> Rejected: reject
+    Approved --> [*]
+    Rejected --> Draft: revise` },
+  { tag: "er", title: "ER diagram", desc: "Modelo entidad-relación.", code:
+`erDiagram
+    CUSTOMER ||--o{ ORDER : places
+    ORDER ||--|{ LINE_ITEM : contains
+    PRODUCT ||--o{ LINE_ITEM : "ordered in"
+    CUSTOMER {
+      string id PK
+      string email
+    }
+    ORDER {
+      string id PK
+      datetime createdAt
+    }` },
+  { tag: "gantt", title: "Gantt", desc: "Cronograma con dependencias.", code:
+`gantt
+    title Sprint Plan
+    dateFormat  YYYY-MM-DD
+    section Design
+    Wireframes     :a1, 2026-05-01, 5d
+    Visual design  :after a1, 4d
+    section Build
+    Frontend       :2026-05-08, 10d
+    Backend        :2026-05-08, 12d` },
+  { tag: "journey", title: "User journey", desc: "Recorrido del usuario por fases.", code:
+`journey
+    title Compra en e-commerce
+    section Descubrimiento
+      Buscar producto: 4: Usuario
+      Comparar: 3: Usuario
+    section Compra
+      Añadir al carrito: 5: Usuario
+      Pagar: 3: Usuario, Sistema
+    section Post
+      Recibir envío: 5: Usuario` },
+  { tag: "pie", title: "Pie chart", desc: "Distribución porcentual.", code:
+`pie showData
+    title Tráfico por canal
+    "Orgánico" : 42
+    "Directo"  : 28
+    "Social"   : 18
+    "Email"    : 12` },
+  { tag: "mind", title: "Mindmap", desc: "Mapa mental jerárquico.", code:
+`mindmap
+  root((Producto))
+    Frontend
+      Web
+      iOS
+      Android
+    Backend
+      API
+      Workers
+    Datos
+      Analítica
+      ML` },
+  { tag: "timeline", title: "Timeline", desc: "Línea temporal por eventos.", code:
+`timeline
+    title Historia del proyecto
+    2024 : Kick-off
+    2025 : MVP : Beta privada
+    2026 : Lanzamiento público` },
+  { tag: "git", title: "Gitgraph", desc: "Flujo Git con ramas.", code:
+`gitGraph
+   commit
+   branch develop
+   checkout develop
+   commit
+   commit
+   checkout main
+   merge develop
+   commit` },
+  { tag: "c4", title: "C4 Context", desc: "Arquitectura de software C4.", code:
+`C4Context
+    title System Context · Checkout
+    Person(user, "Cliente")
+    System(checkout, "Checkout", "Procesa pedidos")
+    System_Ext(payments, "Pasarela de pagos")
+    Rel(user, checkout, "Compra")
+    Rel(checkout, payments, "Autoriza pago")` }
+];
+
+const DEFAULT_CODE = TEMPLATES[0].code;
+
+/* ─────────── State ─────────── */
+const STORAGE_KEY = "mermaid-viewer:doc";
+const $ = (id) => document.getElementById(id);
+
+let panZoom = null;
+let renderTimer = null;
+let lastSvg = "";
+
+/* ─────────── Mermaid ─────────── */
+mermaid.initialize({ startOnLoad: false, theme: "default", securityLevel: "loose" });
+
+/* ─────────── CodeMirror ─────────── */
+CodeMirror.defineSimpleMode = CodeMirror.defineSimpleMode || function(){}; // safety
+const editor = CodeMirror.fromTextArea($("editor"), {
+  lineNumbers: true,
+  lineWrapping: true,
+  matchBrackets: true,
+  styleActiveLine: true,
+  tabSize: 2,
+  indentWithTabs: false,
+  extraKeys: {
+    "Tab": (cm) => cm.replaceSelection("  "),
+    "Cmd-S": (cm) => { share(); return false; },
+    "Ctrl-S": (cm) => { share(); return false; },
+    "Cmd-O": (cm) => { $("fileInput").click(); return false; },
+    "Ctrl-O": (cm) => { $("fileInput").click(); return false; },
+    "Shift-Alt-F": (cm) => { format(); return false; }
+  }
+});
+
+/* ─────────── Render pipeline ─────────── */
+function setStatus(state, msg) {
+  const dot = $("statusDot");
+  dot.className = "status-dot " + (state === "err" ? "err" : state === "busy" ? "busy" : "");
+  $("previewMeta").textContent = msg || "";
+}
+
+function updateMeta() {
+  const doc = editor.getDoc();
+  $("editorMeta").textContent = `${doc.lineCount()} líneas · ${editor.getValue().length} chars`;
+}
+
+async function render() {
+  const code = editor.getValue().trim();
+  $("errorBar").textContent = "";
+  if (!code) {
+    $("preview").innerHTML = "";
+    $("previewEmpty").style.display = "flex";
+    setStatus("ok", "");
+    return;
+  }
+  $("previewEmpty").style.display = "none";
+  setStatus("busy", "renderizando…");
+  try {
+    const id = "mmd-" + Date.now();
+    const { svg } = await mermaid.render(id, code);
+    lastSvg = svg;
+    $("preview").innerHTML = svg;
+    const svgEl = $("preview").querySelector("svg");
+    if (svgEl) {
+      svgEl.removeAttribute("height");
+      svgEl.setAttribute("width", "100%");
+      svgEl.style.maxWidth = "none";
+      svgEl.style.height = "100%";
+      svgEl.id = id + "-svg";
+      if (panZoom) { try { panZoom.destroy(); } catch(e){} }
+      panZoom = svgPanZoom(svgEl, {
+        controlIconsEnabled: false,
+        fit: true, center: true, zoomScaleSensitivity: 0.4,
+        minZoom: 0.1, maxZoom: 20
+      });
+    }
+    setStatus("ok", "OK");
+  } catch (err) {
+    const msg = (err && (err.str || err.message)) || String(err);
+    $("errorBar").textContent = msg;
+    setStatus("err", "error");
+  }
+}
+
+function scheduleRender() {
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(render, 220);
+}
+
+/* ─────────── Persistence (localStorage + URL hash) ─────────── */
+function save() {
+  localStorage.setItem(STORAGE_KEY, editor.getValue());
+  const ts = new Date().toLocaleTimeString();
+  $("saveStatus").textContent = `Guardado · ${ts}`;
+}
+
+// mermaid.live compatible share: base64(deflate(JSON))
+function encodeShare(code) {
+  const state = { code, mermaid: { theme: $("themeSel").value }, updateEditor: true, autoSync: true };
+  const json = JSON.stringify(state);
+  const deflated = pako.deflate(json);
+  let bin = "";
+  for (let i = 0; i < deflated.length; i++) bin += String.fromCharCode(deflated[i]);
+  return "pako:" + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_");
+}
+function decodeShare(hash) {
+  try {
+    const [prefix, payload] = hash.split(":");
+    if (prefix !== "pako" || !payload) return null;
+    const b64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const json = pako.inflate(bytes, { to: "string" });
+    return JSON.parse(json);
+  } catch(e) { console.warn("decodeShare", e); return null; }
+}
+
+function loadInitial() {
+  const hash = location.hash.replace(/^#/, "");
+  if (hash) {
+    const state = decodeShare(hash);
+    if (state && typeof state.code === "string") {
+      editor.setValue(state.code);
+      if (state.mermaid && state.mermaid.theme) {
+        $("themeSel").value = state.mermaid.theme;
+        applyTheme();
+      }
+      return;
+    }
+  }
+  const stored = localStorage.getItem(STORAGE_KEY);
+  editor.setValue(stored || DEFAULT_CODE);
+}
+
+/* ─────────── Toast ─────────── */
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 1600);
+}
+
+/* ─────────── Actions ─────────── */
+function share() {
+  const code = editor.getValue();
+  const token = encodeShare(code);
+  const url = `${location.origin}${location.pathname}#${token}`;
+  history.replaceState(null, "", "#" + token);
+  navigator.clipboard.writeText(url).then(
+    () => toast("Enlace copiado al portapapeles"),
+    () => toast("URL actualizada")
+  );
+}
+
+function downloadSvg() {
+  if (!lastSvg) return toast("Nada que exportar");
+  const blob = new Blob([lastSvg], { type: "image/svg+xml" });
+  triggerDownload(blob, "diagram.svg");
+}
+
+function downloadMmd() {
+  const blob = new Blob([editor.getValue()], { type: "text/plain" });
+  triggerDownload(blob, "diagram.mmd");
+}
+
+function copySvg() {
+  if (!lastSvg) return toast("Nada que copiar");
+  navigator.clipboard.writeText(lastSvg).then(
+    () => toast("SVG copiado"),
+    () => toast("No se pudo copiar")
+  );
+}
+
+function downloadPng() {
+  if (!lastSvg) return toast("Nada que exportar");
+  const svgEl = $("preview").querySelector("svg");
+  if (!svgEl) return;
+  // serialize at intrinsic size
+  const clone = svgEl.cloneNode(true);
+  const bbox = svgEl.getBBox();
+  const w = Math.ceil(bbox.width + 40);
+  const h = Math.ceil(bbox.height + 40);
+  clone.setAttribute("width", w);
+  clone.setAttribute("height", h);
+  clone.setAttribute("viewBox", `${bbox.x - 20} ${bbox.y - 20} ${w} ${h}`);
+  const xml = new XMLSerializer().serializeToString(clone);
+  const svg64 = btoa(unescape(encodeURIComponent(xml)));
+  const img = new Image();
+  img.onload = () => {
+    const scale = 2;
+    const c = document.createElement("canvas");
+    c.width = w * scale; c.height = h * scale;
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0, w, h);
+    c.toBlob((blob) => triggerDownload(blob, "diagram.png"), "image/png");
+  };
+  img.onerror = () => toast("Error al exportar PNG");
+  img.src = "data:image/svg+xml;base64," + svg64;
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast("Descargado · " + filename);
+}
+
+function format() {
+  // light-touch indentation: collapses trailing spaces and normalizes indent to 2 spaces
+  const lines = editor.getValue().split("\n");
+  let depth = 0;
+  const out = lines.map((raw) => {
+    const line = raw.replace(/\s+$/g, "");
+    if (!line.trim()) return "";
+    const trimmed = line.trim();
+    if (/^(end|}|\])\b/.test(trimmed)) depth = Math.max(0, depth - 1);
+    const indented = "  ".repeat(depth) + trimmed;
+    if (/(\{|\[|\bsubgraph\b|\bstate\b.*\{)$/.test(trimmed)) depth++;
+    return indented;
+  });
+  editor.setValue(out.join("\n"));
+  toast("Formato aplicado");
+}
+
+function applyTheme() {
+  mermaid.initialize({ startOnLoad: false, theme: $("themeSel").value, securityLevel: "loose" });
+  render();
+}
+
+/* ─────────── Templates modal ─────────── */
+function openTemplates() {
+  const grid = $("tplGrid");
+  grid.innerHTML = "";
+  TEMPLATES.forEach((t) => {
+    const card = document.createElement("button");
+    card.className = "tpl";
+    card.innerHTML = `<div class="tpl-tag">${t.tag}</div>
+      <div class="tpl-title">${t.title}</div>
+      <div class="tpl-desc">${t.desc}</div>`;
+    card.addEventListener("click", () => {
+      editor.setValue(t.code);
+      $("tplModal").classList.remove("open");
+    });
+    grid.appendChild(card);
+  });
+  $("tplModal").classList.add("open");
+}
+
+/* ─────────── Splitter (drag to resize) ─────────── */
+(function initSplitter() {
+  const splitter = $("splitter");
+  const split = $("split");
+  let dragging = false;
+  splitter.addEventListener("mousedown", (e) => { dragging = true; e.preventDefault(); });
+  window.addEventListener("mouseup", () => { dragging = false; });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const isVertical = window.innerWidth > 900;
+    if (isVertical) {
+      const rect = split.getBoundingClientRect();
+      const x = Math.min(Math.max(e.clientX - rect.left, 200), rect.width - 200);
+      split.style.gridTemplateColumns = `${x}px 6px 1fr`;
+    } else {
+      const rect = split.getBoundingClientRect();
+      const y = Math.min(Math.max(e.clientY - rect.top, 150), rect.height - 150);
+      split.style.gridTemplateRows = `${y}px 6px 1fr`;
+    }
+  });
+})();
+
+/* ─────────── Fullscreen ─────────── */
+$("btnFull").addEventListener("click", () => {
+  $("previewWrap").classList.toggle("fullscreen");
+  setTimeout(() => panZoom && panZoom.resize(), 100);
+});
+
+/* ─────────── Zoom buttons ─────────── */
+$("zoomIn").addEventListener("click", () => panZoom && panZoom.zoomIn());
+$("zoomOut").addEventListener("click", () => panZoom && panZoom.zoomOut());
+$("zoomFit").addEventListener("click", () => panZoom && (panZoom.resize(), panZoom.fit(), panZoom.center()));
+$("zoomReset").addEventListener("click", () => panZoom && panZoom.resetZoom());
+
+/* ─────────── Wire up ─────────── */
+$("btnTpl").addEventListener("click", openTemplates);
+$("tplClose").addEventListener("click", () => $("tplModal").classList.remove("open"));
+$("tplModal").addEventListener("click", (e) => { if (e.target.id === "tplModal") $("tplModal").classList.remove("open"); });
+
+$("btnShare").addEventListener("click", share);
+$("btnDlSvg").addEventListener("click", downloadSvg);
+$("btnDlPng").addEventListener("click", downloadPng);
+$("btnDlMmd").addEventListener("click", downloadMmd);
+$("btnCopySvg").addEventListener("click", copySvg);
+$("btnFormat").addEventListener("click", format);
+$("btnClear").addEventListener("click", () => {
+  if (confirm("¿Vaciar el editor?")) { editor.setValue(""); }
+});
+
+$("btnOpen").addEventListener("click", () => $("fileInput").click());
+$("fileInput").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const r = new FileReader();
+  r.onload = () => editor.setValue(String(r.result || ""));
+  r.readAsText(file);
+});
+
+$("themeSel").addEventListener("change", applyTheme);
+
+editor.on("change", () => {
+  updateMeta();
+  scheduleRender();
+  save();
+});
+
+// Drag & drop file onto editor
+$("split").addEventListener("dragover", (e) => { e.preventDefault(); });
+$("split").addEventListener("drop", (e) => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => editor.setValue(String(r.result || ""));
+  r.readAsText(f);
+});
+
+// Keyboard shortcuts globally
+window.addEventListener("keydown", (e) => {
+  const meta = e.metaKey || e.ctrlKey;
+  if (meta && e.key.toLowerCase() === "s") { e.preventDefault(); share(); }
+  if (meta && e.key.toLowerCase() === "o") { e.preventDefault(); $("fileInput").click(); }
+  if (e.key === "Escape" && $("previewWrap").classList.contains("fullscreen")) {
+    $("previewWrap").classList.remove("fullscreen");
+    setTimeout(() => panZoom && panZoom.resize(), 100);
+  }
+});
+
+/* ─────────── Boot ─────────── */
+loadInitial();
+updateMeta();
+render();
+</script>
+</body>
+</html>
